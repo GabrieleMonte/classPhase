@@ -1,6 +1,6 @@
-# ClassPhase
+# classPhase
 
-**ClassPhase** is a modified version of the CLASS Boltzmann solver (https://github.com/lesgourg/class_public) that isolates and models the acoustic phase shift in the CMB caused by relativistic species, including both free-streaming (Standard Model-like) and interacting neutrinos. It provides a consistent framework to analyze the phase shift as a direct observable.
+**classPhase** is a modified version of the CLASS Boltzmann solver (https://github.com/lesgourg/class_public) that isolates and models the acoustic phase shift in the CMB caused by relativistic species, including both free-streaming (Standard Model-like) and interacting neutrinos. It provides a consistent framework to analyze the phase shift as a direct observable.
 
 ## Overview
 
