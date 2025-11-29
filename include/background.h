@@ -148,6 +148,38 @@ struct background
 
   //@}
 
+  /** ============================================================
+   * Phase-shift parameters (affecting SBT and PBT methods)
+   * ============================================================
+   */
+
+  double N_phase;        /**< Effective number of phase-shifting relativistic species
+                              (N_eff^{δℓ} or N_eff^{δφ}; defaults to standard N_eff) */
+
+  /* ------------------------------------------------------------
+   * Spectrum-Based Template (SBT) parameters
+   *
+   * These determine the shape of the analytic phase-shift template
+   * applied directly to the unlensed/lensed CMB spectra.
+   *     - (\ell_infty, \ell_\star, \xi)   set the size and steepness of the shift
+   *     - A_\infty   rescales the overall high-\ell normalization due to neutrino interactions
+   * See: Eq. (2.6) of 2501.13788, and Eq. (5) of 2509.20363.
+   * ------------------------------------------------------------ */
+
+  double ell_infty;      /**< Asymptotic multipole shift \ell_\infty */
+  double ell_star;       /**< Characteristic transition scale \ell_\star */
+  double xi;             /**< Power-law slope parameter \xi */
+  double A_infty;        /**< High-\ell normalization A_\infty for SBT with interacting neutrinos*/
+
+  /* ------------------------------------------------------------
+   * Parameters for undamping corrections used when producing
+   * lensed CMB spectra (needed for SBT calibration).
+   *   See Eq. (2.3) in 2501.13788.
+   * ------------------------------------------------------------ */
+
+  double afid;
+  double kfid;           
+  double thD_fid;        /**< Fiducial damping scale \theta_{D,\rm fid} used in undamping step */
 
   /** @name - all indices for the vector of background (=bg) quantities stored in table */
 

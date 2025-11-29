@@ -277,6 +277,47 @@ struct perturbations
   short has_source_k2gamma_Nb; /**< do we need source for metric fluctuation gamma in Nbody gauge? */
 
 
+  /** ============================================================
+   * Phase-shift infrastructure (used by the PBT method)
+   * ============================================================
+   */
+
+  short perturbation_based_shift;          /**< If TRUE, apply perturbation-based template (PBT) phase shift */
+  FileName phase_shift_template_file;      /**< File containing redshift-dependent template parameters */
+
+  /* --- Template tables and interpolation state --- */
+  double * phase_shift_template_table;     /**< Raw table read from file: z and T/P template parameters */
+  int phase_shift_template_size;           /**< Number of redshift entries in the table */
+
+  double * phase_shift_template;           /**< Temporary storage for interpolated template parameters at a given z */
+  int phase_shift_template_pars_size;      /**< Number of template parameters per sector (T or P) */
+
+  int last_index_z_phase_shift_template;   /**< Cached index for spline interpolation in redshift */
+
+  /* --- Indices for T/P template parameters in phase_shift_template[] --- */
+  int index_pbt_f_infty_T;    /**< f_infty for temperature */
+  int index_pbt_krs_star_T;   /**< (k r_s)_* for temperature */
+  int index_pbt_xi_T;         /**< xi for temperature */
+
+  int index_pbt_f_infty_P;    /**< f_infty for polarization */
+  int index_pbt_krs_star_P;   /**< (k r_s)_* for polarization */
+  int index_pbt_xi_P;         /**< xi for polarization */
+
+  /* --- Source indices needed by PBT (subset of existing tp indices) --- */
+
+  int index_tp_t0_sw;                    /**< Sachs–Wolfe contribution to the temperature monopole */
+  int index_tp_t0_g;                     /**< Visibility function g for the temperature monopole */
+  int index_tp_t0_g_prime_over_k;        /**< g'/k term in the monopole source */
+  int index_tp_t0_theta_b_over_k;        /**< \theta_b/k contribution to monopole */
+  int index_tp_t0_theta_b_prime_over_k2; /**< \theta_b'/k^2 contribution to monopole */
+
+  int index_tp_t2_g;                     /**< Visibility function g for the quadrupole */
+  int index_tp_t2_Pi;                    /**< Polarization quadrupole source Π for temperature */
+
+  int index_tp_p_g;                      /**< Visibility function g for polarization source */
+  int index_tp_p_Pi;                     /**< Polarization field Π for polarization source */
+
+                                     
   /* remember that the temperature source function includes three
      terms that we call 0,1,2 (since the strategy in class v > 1.7 is
      to avoid the integration by part that would reduce the source to
@@ -974,6 +1015,12 @@ extern "C" {
                                             struct perturbations_workspace * ppw,
                                             ErrorMsg error_message
                                             );
+
+  /* --- Utility function to read in phase shift template --- */
+
+  int perturbation_read_phase_shift_template_pars_from_file(
+            struct perturbations * ppt,
+            char * phase_shift_template_file);
 
 #ifdef __cplusplus
 }

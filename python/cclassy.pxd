@@ -108,6 +108,15 @@ cdef extern from "class.h":
         double H_eq
         double z_eq
         double tau_eq
+        #phase-shift relevant quantities
+        double N_phase
+        double xi
+        double ell_infty
+        double A_infty
+        double ell_star
+        double thD_fid
+        double afid
+        double kfid
 
     cdef struct thermodynamics:
         short is_allocated
@@ -182,6 +191,8 @@ cdef extern from "class.h":
         double * alpha_idm_dr
         double * beta_idr
 
+        #phase shift relevant variable (PBT method)
+        short perturbation_based_shift
         # add source functions for comparison
         short has_source_t
         short has_source_p

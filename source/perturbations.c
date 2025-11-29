@@ -957,7 +957,512 @@ int perturbations_init(
 
   class_finish_parallel();
 
+  /**
+   * Main Script for the perturbation-based template (PBT) method to induce a phase-shift in
+   * the final temperature and polarization power spectra.
+   * Here we apply a perturbation-based phase shift to the photon temperature and polarization
+   * source functions using the neutrino phase-shift template of Eq. 2.10 in 2501.13788.
+   *
+   * The template f(k r_s, z) is specified by redshift-dependent parameters
+   * (f_\infty, (k r_s)_\star, \xi), and is rescaled by an overall amplitude
+   * A(N_{\rm eff}^{\delta\phi}, N_{\rm eff}) that depends on the number of phase-shifting species.
+   *
+   * Definitions:
+   *   f(k r_s, z) = A(N_{\rm eff}^{\delta\phi}, N_{\rm eff}) \cdot f_\infty(z)
+   *                 / [1 + (k r_s / (k r_s)_\star(z))^{\xi(z)}]
+   *   A(N_{\rm eff}^{\delta\phi}, N_{\rm eff}) =
+   *       [\epsilon(N_{\rm eff}^{\delta \phi}) - \epsilon(N_{\rm eff})] / [\epsilon(0) - \epsilon(3.044)],
+   *   \epsilon(N_\nu) = N_\nu / (N_\nu + a_\nu),  a_\nu = (8/7)·(11/4)^{4/3}.
+   *
+   * For details, see Sec. 2.3 of 2501.13788.
+  */
+  if ((pba->N_phase != pba->Neff) && (ppt->perturbation_based_shift == _TRUE_)) {
 
+    /** --- 0) Precompute amplitude A(N_phase, N_eff) --- */
+    double tau_value;
+    double z_value;
+    double a_nu = 8.0/7.0 * pow(11.0/4.0, 4.0/3.0);
+
+    /* Fiducial \epsilon(3.044), \epsilon(N_phase), \epsilon(N_eff): */
+    double eps_fid   = 3.044 / (3.044 + a_nu);
+    double eps_Nphase = pba->N_phase / (pba->N_phase + a_nu);
+    double eps_Nur   = pba->Neff   / (pba->Neff   + a_nu);
+
+    /* Overall amplitude A, normalized to the shift between N_eff = 0 and N_eff = 3.044: */
+    double Amp_shift = (eps_Nphase - eps_Nur) / (0.0 - eps_fid);
+    
+    /** --- 1) Read phase-shift template parameters as a function of redshift --- */
+
+    /* Allocate array to hold (f_infty, (k r_s)_\star, \xi) at a given z: */
+    class_alloc(ppt->phase_shift_template,
+                ppt->phase_shift_template_pars_size * sizeof(double),
+                ppt->error_message);
+
+    /* Read the precomputed (z, template-parameter) table from file: */
+    class_call(perturbation_read_phase_shift_template_pars_from_file(
+                 ppt,
+                 ppt->phase_shift_template_file),
+               ppt->error_message,
+               ppt->error_message);
+
+    /** --- 2) Allocate arrays for shifted k and spline second-derivatives in k --- */
+
+    /* Second derivatives in k (one per source we will shift): */
+    double *ddsources_tp_t0_sw_kshift =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+    double *ddsources_tp_t0_theta_b_over_k_kshift =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+    double *ddsources_tp_t0_theta_b_prime_over_k2_kshift =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+    double *ddsources_tp_p_kshift =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+    double *ddsources_tp_t2_kshift =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+
+    /* Shifted k-grid for T and P sources, stored for all (\tau, k): */
+    double *k_shifted_T =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+    double *k_shifted_P =
+      (double *)malloc(ppt->k_size[ppt->index_md_scalars] * ppt->tau_size * sizeof(double));
+
+    /**
+     *  --- 3) Build shifted k-arrays k \rightarrow k + \Delta k_\nu(\tau, k) ---
+     *
+     *  For each \tau, we:
+     *    - compute the corresponding redshift z and sound horizon r_s(z),
+     *    - read the template parameters at that z,
+     *    - compute (\Delta k)_T(z, k) and (\Delta k)_P(z, k),
+     *    - store k_shifted_T(τ, k) and k_shifted_P(τ, k).
+    */
+    for (int index_tau = 0; index_tau < ppt->tau_size; index_tau++) {
+
+      int first_index_back;
+      double *pvecback_shift;
+
+      class_alloc(pvecback_shift,
+                  pba->bg_size * sizeof(double),
+                  pba->error_message);
+
+      tau_value = ppt->tau_sampling[index_tau];
+
+      class_call(background_at_tau(pba,
+                                   tau_value,
+                                   long_info,
+                                   inter_normal,
+                                   &first_index_back,
+                                   pvecback_shift),
+                 pba->error_message,
+                 ppt->error_message);
+
+      /* Convert \tau to redshift and sound horizon: */
+      z_value  = 1.0 / pvecback_shift[pba->index_bg_a] - 1.0;
+      double rs_value = pvecback_shift[pba->index_bg_rs];
+
+      /* Get (f_\infty, (k r_s)_\star, \xi) at this z (clamped to [500, 2100] in z): */
+      if (z_value >= 2100.0) {
+        /* High-z limit: use parameters at z = 2100
+         * For z>=2100, we expect the phase shift to remain
+         * unaltered (see Sec. 2.3 in 2501.13788 for details)
+         */
+        for (int index_phase_shift_template_par = 0;
+             index_phase_shift_template_par < ppt->phase_shift_template_pars_size;
+             ++index_phase_shift_template_par) {
+
+          class_call(array_interpolate_spline_transposed(
+                       ppt->phase_shift_template_table,
+                       ppt->phase_shift_template_size,
+                       2 * ppt->phase_shift_template_pars_size + 1,
+                       0,
+                       index_phase_shift_template_par + 1,
+                       index_phase_shift_template_par + ppt->phase_shift_template_pars_size + 1,
+                       2100.0,
+                       &ppt->last_index_z_phase_shift_template,
+                       &(ppt->phase_shift_template[index_phase_shift_template_par]),
+                       ppt->error_message),
+                     ppt->error_message,
+                     ppt->error_message);
+        }
+      }
+      else if (z_value > 500.0 && z_value < 2100.0) {
+        /* Interpolate parameters at the actual redshift z_value: */
+        for (int index_phase_shift_template_par = 0;
+             index_phase_shift_template_par < ppt->phase_shift_template_pars_size;
+             ++index_phase_shift_template_par) {
+
+          class_call(array_interpolate_spline_transposed(
+                       ppt->phase_shift_template_table,
+                       ppt->phase_shift_template_size,
+                       2 * ppt->phase_shift_template_pars_size + 1,
+                       0,
+                       index_phase_shift_template_par + 1,
+                       index_phase_shift_template_par + ppt->phase_shift_template_pars_size + 1,
+                       z_value,
+                       &ppt->last_index_z_phase_shift_template,
+                       &(ppt->phase_shift_template[index_phase_shift_template_par]),
+                       ppt->error_message),
+                     ppt->error_message,
+                     ppt->error_message);
+        }
+      }
+      else {
+        /* Low-z limit: we set the induced phase shift to zero, safely.
+         * The choice of z=500 is somewhat arbitrary. As long as we pick a z_min 
+         * well within matter-domination, the impact of the phase shift is negligible
+         * and we can fully neglect it. (see Sec. 2.3 in 2501.13788 for details)
+         */
+          ppt->phase_shift_template[ppt->index_pbt_f_infty_T] = 0;
+          ppt->phase_shift_template[ppt->index_pbt_f_infty_P] = 0;
+          ppt->phase_shift_template[ppt->index_pbt_krs_star_T] = 1;
+          ppt->phase_shift_template[ppt->index_pbt_krs_star_P] = 1;
+          ppt->phase_shift_template[ppt->index_pbt_xi_T] = 1;
+          ppt->phase_shift_template[ppt->index_pbt_xi_P] = 1;          
+      }
+      /* For each k, compute the T and P shifts at this \tau: */
+      for (int index_k = 0; index_k < ppt->k_size[ppt->index_md_scalars]; index_k++) {
+
+        double f_infty_T_at_z   = ppt->phase_shift_template[ppt->index_pbt_f_infty_T]   * _PI_;
+        double krs_star_T_at_z  = ppt->phase_shift_template[ppt->index_pbt_krs_star_T]  * _PI_;
+        double xi_T_at_z        = ppt->phase_shift_template[ppt->index_pbt_xi_T];
+
+        double f_infty_P_at_z   = ppt->phase_shift_template[ppt->index_pbt_f_infty_P]   * _PI_;
+        double krs_star_P_at_z  = ppt->phase_shift_template[ppt->index_pbt_krs_star_P]  * _PI_;
+        double xi_P_at_z        = ppt->phase_shift_template[ppt->index_pbt_xi_P];
+
+        /* \Delta k_T and \Delta k_P according to the template f(k r_s, z): */
+        double x_T = ppt->k[ppt->index_md_scalars][index_k] * rs_value / krs_star_T_at_z;
+        double x_P = ppt->k[ppt->index_md_scalars][index_k] * rs_value / krs_star_P_at_z;
+
+        double shift_in_k_T_at_z =
+          Amp_shift * (f_infty_T_at_z / rs_value) / (1.0 + pow(x_T, xi_T_at_z));
+        double shift_in_k_P_at_z =
+          Amp_shift * (f_infty_P_at_z / rs_value) / (1.0 + pow(x_P, xi_P_at_z));
+
+        k_shifted_T[index_tau * ppt->k_size[ppt->index_md_scalars] + index_k] =
+          ppt->k[ppt->index_md_scalars][index_k] + shift_in_k_T_at_z;
+        k_shifted_P[index_tau * ppt->k_size[ppt->index_md_scalars] + index_k] =
+          ppt->k[ppt->index_md_scalars][index_k] + shift_in_k_P_at_z;
+      } /* end loop over k*/
+
+      free(pvecback_shift);
+    } /* end loop over \tau */
+    /**
+     *  --- 4) Interpolate sources on the shifted k-grid ---
+     *
+     *  For each \tau, we:
+     *    - extract k_shifted_T(\tau, .) and k_shifted_P(\tau, .),
+     *    - build splines of the relevant sources as functions of k_shifted,
+     *    - store the k-derivatives in ddsources_*_kshift.
+    */
+
+    for (int index_tau = 0; index_tau < ppt->tau_size; index_tau++) {
+
+      double *k_shifted_at_tau_T =
+        (double *)malloc(ppt->k_size[ppt->index_md_scalars] * sizeof(double));
+      double *k_shifted_at_tau_P =
+        (double *)malloc(ppt->k_size[ppt->index_md_scalars] * sizeof(double));
+
+      for (int index_k = 0; index_k < ppt->k_size[ppt->index_md_scalars]; index_k++) {
+        k_shifted_at_tau_T[index_k] =
+          k_shifted_T[index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+        k_shifted_at_tau_P[index_k] =
+          k_shifted_P[index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+      }
+      /* Build k_shifted splines for the relevant perturbation sources S_X, namely:
+       * 		- the SW term (sources S_{T,0})
+       * 		- \theta_b/k and \theta_b^\prime/k^2 (sources S_{T,0})
+       * 		- \Pi (sources S_P as well as S_{T,2})
+       */
+      class_call(array_spline_table_one_column(
+                            k_shifted_at_tau_T,
+                            ppt->k_size[ppt->index_md_scalars],
+                            ppt->sources[ppt->index_md_scalars]
+                                       [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                                        + ppt->index_tp_t0_sw],
+                            ppt->tau_size,
+                            index_tau,
+                            ddsources_tp_t0_sw_kshift,
+                            _SPLINE_EST_DERIV_,
+                            ppt->error_message),
+                          ppt->error_message,
+                          ppt->error_message);
+
+      class_call(array_spline_table_one_column(
+                            k_shifted_at_tau_T,
+                            ppt->k_size[ppt->index_md_scalars],
+                            ppt->sources[ppt->index_md_scalars]
+                                       [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                                        + ppt->index_tp_t0_theta_b_over_k],
+                            ppt->tau_size,
+                            index_tau,
+                            ddsources_tp_t0_theta_b_over_k_kshift,
+                            _SPLINE_EST_DERIV_,
+                            ppt->error_message),
+                          ppt->error_message,
+                          ppt->error_message);
+
+      class_call(array_spline_table_one_column(
+                            k_shifted_at_tau_T,
+                            ppt->k_size[ppt->index_md_scalars],
+                            ppt->sources[ppt->index_md_scalars]
+                                       [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                                        + ppt->index_tp_t0_theta_b_prime_over_k2],
+                            ppt->tau_size,
+                            index_tau,
+                            ddsources_tp_t0_theta_b_prime_over_k2_kshift,
+                            _SPLINE_EST_DERIV_,
+                            ppt->error_message),
+                          ppt->error_message,
+                          ppt->error_message);
+
+      class_call(array_spline_table_one_column(
+                            k_shifted_at_tau_P,
+                            ppt->k_size[ppt->index_md_scalars],
+                            ppt->sources[ppt->index_md_scalars]
+                                       [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                                        + ppt->index_tp_p_Pi],
+                            ppt->tau_size,
+                            index_tau,
+                            ddsources_tp_p_kshift,
+                            _SPLINE_EST_DERIV_,
+                            ppt->error_message),
+                          ppt->error_message,
+                          ppt->error_message);
+
+      class_call(array_spline_table_one_column(
+                            k_shifted_at_tau_T,
+                            ppt->k_size[ppt->index_md_scalars],
+                            ppt->sources[ppt->index_md_scalars]
+                                       [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                                        + ppt->index_tp_t2_Pi],
+                            ppt->tau_size,
+                            index_tau,
+                            ddsources_tp_t2_kshift,
+                            _SPLINE_EST_DERIV_,
+                            ppt->error_message),
+                          ppt->error_message,
+                          ppt->error_message);
+
+      free(k_shifted_at_tau_T);
+      free(k_shifted_at_tau_P);
+    } /* end loop over \tau (interpolation step) */
+    /**
+     *  --- 5) Evaluate shifted sources back on the original k-grid ---
+     *
+     *  For each (\tau, k), we:
+     *    - evaluate the relevant terms in the shifted perturbations sources at the original k,
+     *    - combine them with the unshifted sources to build the shifted
+     *      total sources S_{T,0}, S_P and S_{T,2}.
+     */
+
+    for (int index_tau = 0; index_tau < ppt->tau_size; index_tau++) {
+
+      double *k_shifted_at_tau_T =
+        (double *)malloc(ppt->k_size[ppt->index_md_scalars] * sizeof(double));
+      double *k_shifted_at_tau_P =
+        (double *)malloc(ppt->k_size[ppt->index_md_scalars] * sizeof(double));
+
+      for (int index_k = 0; index_k < ppt->k_size[ppt->index_md_scalars]; index_k++) {
+        k_shifted_at_tau_T[index_k] =
+          k_shifted_T[index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+        k_shifted_at_tau_P[index_k] =
+          k_shifted_P[index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+      }
+
+      for (int index_k = 0; index_k < ppt->k_size[ppt->index_md_scalars]; index_k++) {
+
+        /* --- Temperature Spectrum Source: S_{T,0} --- */
+        
+		/* Evaluate ushifted relevant terms in S_{T,0}, specifically the SW term, \theta_b/k and \theta_b^\prime/k^2 */
+        double y_t0_g =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t0_g]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t0_g_prime_over_k =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t0_g_prime_over_k]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t0_sw_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t0_sw]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t0_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t0]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t0_theta_b_over_k_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t0_theta_b_over_k]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t0_theta_b_prime_over_k2_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t0_theta_b_prime_over_k2]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        /* Evaluate the shifted SW term, \theta_b/k, theta_b^\prime/k^2 at the original k: */
+        double y_t0_sw_shifted;
+        double y_t0_theta_b_over_k_shifted;
+        double y_t0_theta_b_prime_over_k2_shifted;
+
+        array_interpolate_extrapolate_spline_one_column(
+          k_shifted_at_tau_T,
+          ppt->k_size[ppt->index_md_scalars],
+          ppt->sources[ppt->index_md_scalars]
+                     [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                      + ppt->index_tp_t0_sw],
+          ppt->tau_size,
+          index_tau,
+          ddsources_tp_t0_sw_kshift,
+          ppt->k[ppt->index_md_scalars][index_k],
+          &y_t0_sw_shifted,
+          ppt->error_message);
+
+        array_interpolate_extrapolate_spline_one_column(
+          k_shifted_at_tau_T,
+          ppt->k_size[ppt->index_md_scalars],
+          ppt->sources[ppt->index_md_scalars]
+                     [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                      + ppt->index_tp_t0_theta_b_over_k],
+          ppt->tau_size,
+          index_tau,
+          ddsources_tp_t0_theta_b_over_k_kshift,
+          ppt->k[ppt->index_md_scalars][index_k],
+          &y_t0_theta_b_over_k_shifted,
+          ppt->error_message);
+
+        array_interpolate_extrapolate_spline_one_column(
+          k_shifted_at_tau_T,
+          ppt->k_size[ppt->index_md_scalars],
+          ppt->sources[ppt->index_md_scalars]
+                     [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                      + ppt->index_tp_t0_theta_b_prime_over_k2],
+          ppt->tau_size,
+          index_tau,
+          ddsources_tp_t0_theta_b_prime_over_k2_kshift,
+          ppt->k[ppt->index_md_scalars][index_k],
+          &y_t0_theta_b_prime_over_k2_shifted,
+          ppt->error_message);
+
+        /* Build the shifted monopole source S_{T,0}: */
+        ppt->sources[ppt->index_md_scalars]
+                    [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                     + ppt->index_tp_t0]
+                    [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k] =
+          y_t0_g * (y_t0_sw_shifted - y_t0_sw_unshifted)
+          + y_t0_g * (y_t0_theta_b_prime_over_k2_shifted - y_t0_theta_b_prime_over_k2_unshifted)
+          + y_t0_g_prime_over_k * (y_t0_theta_b_over_k_shifted - y_t0_theta_b_over_k_unshifted)
+          + y_t0_unshifted;
+
+       /* --- Temperature Spectrum Source: S_{T,2} --- */
+
+        double y_t2_g =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t2_g]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t2_Pi_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t2_Pi]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t2_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_t2]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_t2_Pi_shifted;
+
+        array_interpolate_extrapolate_spline_one_column(
+          k_shifted_at_tau_T,
+          ppt->k_size[ppt->index_md_scalars],
+          ppt->sources[ppt->index_md_scalars]
+                     [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                      + ppt->index_tp_t2_Pi],
+          ppt->tau_size,
+          index_tau,
+          ddsources_tp_t2_kshift,
+          ppt->k[ppt->index_md_scalars][index_k],
+          &y_t2_Pi_shifted,
+          ppt->error_message);
+
+        ppt->sources[ppt->index_md_scalars]
+                    [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                     + ppt->index_tp_t2]
+                    [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k] =
+          y_t2_g * (y_t2_Pi_shifted - y_t2_Pi_unshifted) + y_t2_unshifted;
+
+        /* --- Polarization Spectrum Source: S_P --- */
+
+        double y_p_g =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_p_g]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_p_Pi_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_p_Pi]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_p_unshifted =
+          ppt->sources[ppt->index_md_scalars]
+                      [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                       + ppt->index_tp_p]
+                      [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k];
+
+        double y_p_Pi_shifted;
+
+        array_interpolate_extrapolate_spline_one_column(
+          k_shifted_at_tau_P,
+          ppt->k_size[ppt->index_md_scalars],
+          ppt->sources[ppt->index_md_scalars]
+                     [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                      + ppt->index_tp_p_Pi],
+          ppt->tau_size,
+          index_tau,
+          ddsources_tp_p_kshift,
+          ppt->k[ppt->index_md_scalars][index_k],
+          &y_p_Pi_shifted,
+          ppt->error_message);
+
+        ppt->sources[ppt->index_md_scalars]
+                    [ppt->index_ic_ad * ppt->tp_size[ppt->index_md_scalars]
+                     + ppt->index_tp_p]
+                    [index_tau * ppt->k_size[ppt->index_md_scalars] + index_k] =
+          y_p_g * (y_p_Pi_shifted - y_p_Pi_unshifted) + y_p_unshifted;
+      }
+
+      free(k_shifted_at_tau_T);
+      free(k_shifted_at_tau_P);
+    } /* end loop over \tau (extrapolation step) */
+    
+    /** --- 6) Free temporary arrays and template storage --- */
+
+    free(ddsources_tp_t0_sw_kshift);
+    free(ddsources_tp_t0_theta_b_over_k_kshift);
+    free(ddsources_tp_t0_theta_b_prime_over_k2_kshift);
+    free(ddsources_tp_p_kshift);
+    free(ddsources_tp_t2_kshift);
+    free(k_shifted_T);
+    free(k_shifted_P);
+
+    free(ppt->phase_shift_template);
+    free(ppt->phase_shift_template_table);
+  }
   /** - spline the source array with respect to the time variable */
 
   if (ppt->ln_tau_size > 1) {
@@ -1236,6 +1741,11 @@ int perturbations_indices(
   index_type = 0;
   class_define_index(ppt->index_tp_t2,ppt->has_source_t,index_type,1);
   class_define_index(ppt->index_tp_p,ppt->has_source_p,index_type,1);
+  /* indices relevant for manually imprinting the neutrino-induced phase shift */
+  class_define_index(ppt->index_tp_t2_g,ppt->has_source_t,index_type,1);
+  class_define_index(ppt->index_tp_t2_Pi,ppt->has_source_t,index_type,1);
+  class_define_index(ppt->index_tp_p_g,ppt->has_source_p,index_type,1);
+  class_define_index(ppt->index_tp_p_Pi,ppt->has_source_p,index_type,1);
   index_type_common = index_type;
 
   /* indices for perturbed recombination */
@@ -1243,6 +1753,8 @@ int perturbations_indices(
   class_define_index(ppt->index_tp_perturbed_recombination_delta_temp,ppt->has_perturbed_recombination,index_type,1);
   class_define_index(ppt->index_tp_perturbed_recombination_delta_chi,ppt->has_perturbed_recombination,index_type,1);
 
+
+	
 
 
 
@@ -1389,6 +1901,13 @@ int perturbations_indices(
 
       index_type = index_type_common;
       class_define_index(ppt->index_tp_t0,         ppt->has_source_t,         index_type,1);
+      /* indices relevant for manually imprinting the neutrino-induced phase shift */
+      class_define_index(ppt->index_tp_t0_sw,         ppt->has_source_t,         index_type,1);
+      class_define_index(ppt->index_tp_t0_g,         ppt->has_source_t,         index_type,1);
+      class_define_index(ppt->index_tp_t0_g_prime_over_k,         ppt->has_source_t,         index_type,1);
+      class_define_index(ppt->index_tp_t0_theta_b_over_k,         ppt->has_source_t,         index_type,1);
+      class_define_index(ppt->index_tp_t0_theta_b_prime_over_k2,         ppt->has_source_t,         index_type,1);
+      
       class_define_index(ppt->index_tp_t1,         ppt->has_source_t,         index_type,1);
       class_define_index(ppt->index_tp_delta_m,    ppt->has_source_delta_m,   index_type,1);
       class_define_index(ppt->index_tp_delta_cb,   ppt->has_source_delta_cb,  index_type,1);
@@ -1522,7 +2041,16 @@ int perturbations_indices(
     ppt->vector_perturbations_data[filenum] = NULL;
     ppt->tensor_perturbations_data[filenum] = NULL;
   }
-
+  /** - Indices for perturbation-based phase shift template table */
+  int index_phase_shift_template_par = 0;
+  class_define_index(ppt->index_pbt_f_infty_T , _TRUE_, index_phase_shift_template_par, 1);
+  class_define_index(ppt->index_pbt_krs_star_T, _TRUE_, index_phase_shift_template_par, 1);
+  class_define_index(ppt->index_pbt_xi_T, _TRUE_, index_phase_shift_template_par, 1);
+  class_define_index(ppt->index_pbt_f_infty_P  , _TRUE_, index_phase_shift_template_par, 1);
+  class_define_index(ppt->index_pbt_krs_star_P , _TRUE_, index_phase_shift_template_par, 1);
+  class_define_index(ppt->index_pbt_xi_P , _TRUE_, index_phase_shift_template_par, 1);
+  ppt->phase_shift_template_pars_size = index_phase_shift_template_par;
+  
   return _SUCCESS_;
 
 }
@@ -2831,6 +3359,144 @@ int perturbations_workspace_init(
 
   return _SUCCESS_;
 }
+
+
+/**
+ * Read the redshift-dependent parameters of the neutrino phase-shift template
+ * (f_\infty, (k r_s)_\star, xi) from an external file, and spline them for later
+ * interpolation inside perturbation computations.
+ *
+ * The file is expected to contain:
+ *   • A header line specifying the number of data rows (N_z).
+ *   • N_z rows, each containing:
+ *        z,
+ *        f_infty_T(z),  krs_star_T(z),  xi_T(z),
+ *        f_infty_P(z),  krs_star_P(z),  xi_P(z).
+ *
+ * Here “T” and “P” refer to the temperature and polarization
+ * phase-shift templates. These parameters correspond to Eq. (2.10)
+ * in 2501.13788.
+ *
+ * After reading the file, the function constructs natural cubic splines
+ * in redshift for each parameter column, so they can later be evaluated
+ * efficiently within perturbations_init().
+ *
+ * @param ppt   Input/Output: pointer to perturbations structure
+ * @param phase_shift_template_file  Input: path to the template file
+ *
+ * @return the CLASS error status
+
+/* Note:
+ * The template file contains separate entries for temperature (dT) and polarization (dP)
+ * parameters. In the current implementation, both sectors receive the *same* physical
+ * phase shift. We keep the temperature and polarization parameters separate only to
+ * facilitate validation, debugging, and potential future generalizations where they
+ * might differ.
+ */
+
+
+
+int perturbation_read_phase_shift_template_pars_from_file(struct perturbations* ppt,
+                                   char* phase_shift_template_file){
+
+  /** Local variables */
+  FILE * fA;
+  char line[_LINE_LENGTH_MAX_];
+  char * left;
+  int headlines = 0;
+  int index_z, index_phase_shift_template_par;
+
+  /* Reset size */
+  ppt->phase_shift_template_size = 0;
+
+  /* 1) Open file and read header line containing number of redshift entries */
+  
+  class_open(fA, phase_shift_template_file, "r", ppt->error_message);
+
+  while (fgets(line, _LINE_LENGTH_MAX_-1, fA) != NULL) {
+    headlines++;
+
+    /* Skip leading whitespace */
+    left = line;
+    while (left[0] == ' ') {
+      left++;
+    }
+
+    /* If the first non-blank character is > 39 in ASCII, the line contains data
+       (i.e. not comment, newline, #, %, etc.). */
+    if (left[0] > 39) {
+
+      /* First data line must contain the number of table entries */
+      class_test(sscanf(line, "%d", &(ppt->phase_shift_template_size)) != 1,
+                 ppt->error_message,
+                 "could not read number of lines from line %i in file '%s'\n",
+                 headlines, phase_shift_template_file);
+
+      /* Allocate the table: 1 column for redshift + 2×N_par columns
+         for values and spline second derivatives. */
+      class_alloc(ppt->phase_shift_template_table,
+                  (2 * ppt->phase_shift_template_pars_size + 1)
+                  * ppt->phase_shift_template_size
+                  * sizeof(double),
+                  ppt->error_message);
+      break;
+    }
+  }
+  /* 2) Read the parameter table (z and 6 template parameters) */
+
+  for (index_z = 0; index_z < ppt->phase_shift_template_size; ++index_z) {
+
+    /* Each row stores:
+       z,
+       f_infty_T, krs_star_T, xi_T,
+       f_infty_P, krs_star_P, xi_P */
+
+    class_test(fscanf(fA, "%lg %lg %lg %lg %lg %lg %lg",
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 0]),
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 1 + ppt->index_pbt_f_infty_T]),
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 1 + ppt->index_pbt_krs_star_T]),
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 1 + ppt->index_pbt_xi_T]),
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 1 + ppt->index_pbt_f_infty_P]),
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 1 + ppt->index_pbt_krs_star_P]),
+                      &(ppt->phase_shift_template_table[
+                          index_z*(2*ppt->phase_shift_template_pars_size+1) + 1 + ppt->index_pbt_xi_P])
+                     ) != 7,
+               ppt->error_message,
+               "could not read template parameters in line %i from '%s'\n",
+               index_z + headlines, phase_shift_template_file);
+  }
+
+  fclose(fA);
+  /* 3) Spline in one dimension */
+  
+  for (index_phase_shift_template_par = 0;
+       index_phase_shift_template_par < ppt->phase_shift_template_pars_size;
+       ++index_phase_shift_template_par) {
+
+    class_call(array_spline(
+                 ppt->phase_shift_template_table,
+                 2 * ppt->phase_shift_template_pars_size + 1,
+                 ppt->phase_shift_template_size,
+                 0,
+                 1+index_phase_shift_template_par,
+                 1+index_phase_shift_template_par+ppt->phase_shift_template_pars_size,
+                 _SPLINE_NATURAL_,
+                 ppt->error_message),
+               ppt->error_message,
+               ppt->error_message);
+  }
+
+  return _SUCCESS_;
+}
+
+
+
 
 /**
  * Free the perturbations_workspace structure (with the exception of the
@@ -7598,7 +8264,6 @@ int perturbations_sources(
                              + exp_m_kappa * exp_mu_idm_g * 2. * pvecmetric[ppw->index_mt_phi_prime])
             + ppt->switch_dop /k/k * ( g *(dkappa * theta_b + dmu_idm_g*theta_idm)
                                        + exp_mu_idm_g * exp_m_kappa * (ddkappa*theta_b + ddmu_idm_g* theta_idm + dkappa * theta_b_prime + dmu_idm_g * theta_idm_prime) );
-
           _set_source_(ppt->index_tp_t1) = switch_isw * exp_m_kappa * exp_mu_idm_g * k* (pvecmetric[ppw->index_mt_psi]-y[ppw->pv->index_pt_phi]);
 
         }
@@ -7608,11 +8273,26 @@ int perturbations_sources(
             + switch_isw * ( g * (y[ppw->pv->index_pt_phi]-pvecmetric[ppw->index_mt_psi])
                              + exp_m_kappa * 2. * pvecmetric[ppw->index_mt_phi_prime])
             + ppt->switch_dop /k/k * ( g * theta_b_prime  + g_prime * theta_b);
-
+            
+          /* S_{T,0} terms relevant for manually imprinting the neutrino-induced phase shift */
+          _set_source_(ppt->index_tp_t0_sw) =
+            ppt->switch_sw * (delta_g / 4. + pvecmetric[ppw->index_mt_psi]);
+          _set_source_(ppt->index_tp_t0_g) =
+            ppt->switch_sw * g ;
+          _set_source_(ppt->index_tp_t0_g_prime_over_k) =
+            ppt->switch_dop/k * g_prime;
+          _set_source_(ppt->index_tp_t0_theta_b_prime_over_k2) =
+            ppt->switch_dop * theta_b_prime/k/k;
+          _set_source_(ppt->index_tp_t0_theta_b_over_k) =
+            ppt->switch_dop * theta_b/k;
           _set_source_(ppt->index_tp_t1) = switch_isw * exp_m_kappa * k* (pvecmetric[ppw->index_mt_psi]-y[ppw->pv->index_pt_phi]);
         }
 
         _set_source_(ppt->index_tp_t2) = ppt->switch_pol * g * P;
+        
+        /* S_{T,2} terms relevant for manually imprinting the neutrino-induced phase shift */
+        _set_source_(ppt->index_tp_t2_Pi) = ppt->switch_pol * P;
+        _set_source_(ppt->index_tp_t2_g) = ppt->switch_pol * g ; 
       }
 
 
@@ -7666,8 +8346,21 @@ int perturbations_sources(
                                                    - a_prime_over_a_prime * pvecmetric[ppw->index_mt_alpha]
                                                    - a_prime_over_a * pvecmetric[ppw->index_mt_alpha_prime]))
             + ppt->switch_dop /k/k * ( g * theta_b_prime + g_prime * theta_b );
-
-
+          /* S_{T,0} terms relevant for manually imprinting the neutrino-induced phase shift
+           * (no difference with newotnian gauge since the phase-shift is only inprinted on subhorizon modes)
+           */
+          
+          _set_source_(ppt->index_tp_t0_sw) =
+            ppt->switch_sw * (delta_g/4. + pvecmetric[ppw->index_mt_alpha_prime]);
+          _set_source_(ppt->index_tp_t0_g) =
+            ppt->switch_sw * g ;
+          _set_source_(ppt->index_tp_t0_g_prime_over_k) =
+            ppt->switch_dop * g_prime/k;
+          _set_source_(ppt->index_tp_t0_theta_b_prime_over_k2) =
+            ppt->switch_dop * theta_b_prime/k/k;
+          _set_source_(ppt->index_tp_t0_theta_b_over_k) =
+            ppt->switch_dop * theta_b/k;
+            
           _set_source_(ppt->index_tp_t1) =
             switch_isw * exp_m_kappa * k * (pvecmetric[ppw->index_mt_alpha_prime]
                                             + 2. * a_prime_over_a * pvecmetric[ppw->index_mt_alpha]
@@ -7675,6 +8368,11 @@ int perturbations_sources(
         }
         _set_source_(ppt->index_tp_t2) =
           ppt->switch_pol * g * P;
+          /* S_{T,2} terms relevant for manually imprinting the neutrino-induced phase shift
+           * (no difference with newotnian gauge since the phase-shift is only inprinted on subhorizon modes)
+           */
+        _set_source_(ppt->index_tp_t2_Pi) = ppt->switch_pol * P;
+        _set_source_(ppt->index_tp_t2_g) = ppt->switch_pol * g ; 
       }
 
     }
@@ -7688,7 +8386,9 @@ int perturbations_sources(
          established in CMBFAST and CAMB. */
 
       _set_source_(ppt->index_tp_p) = sqrt(6.) * g * P;
-
+      /* S_{P} term relevant for manually imprinting the neutrino-induced phase shift */
+      _set_source_(ppt->index_tp_p_g) = g ; 
+      _set_source_(ppt->index_tp_p_Pi) = sqrt(6.) * P; 
     }
 
     /* now, non-CMB sources */

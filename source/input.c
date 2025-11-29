@@ -2356,9 +2356,10 @@ int input_read_parameters_species(struct file_content * pfc,
   /** Summary: */
 
   /** - Define local variables */
-  int flag1, flag2, flag3;
-  double param1, param2, param3;
+  int flag1, flag2, flag3, flag4, flag5, flag6, flag7, flag8, flag9, flag10, flag11, flag12, flag13;
+  double param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11;
   char string1[_ARGUMENT_LENGTH_MAX_];
+  char string2[_ARGUMENT_LENGTH_MAX_];
   int fileentries;
   int N_ncdm=0, n, entries_read;
   double rho_ncdm;
@@ -2446,7 +2447,61 @@ int input_read_parameters_species(struct file_content * pfc,
   class_call(parser_read_double(pfc,"omega_ur",&param3,&flag3,errmsg),
              errmsg,
              errmsg);
-  /* Test */
+
+  /** 3.b) Direct phase shift Parameter */
+  /* N_phase: number of *phase-shifting* relativistic species.
+     This corresponds to N_eff^{\delta\ell} or N_eff^{\delta\phi} in the notation of
+     2501.13788. If omitted, CLASS sets N_phase = N_eff by default.
+     If N_phase is provided, the user must also supply N_ur / Omega_ur /
+     omega_ur. */
+  class_call(parser_read_double(pfc,"N_phase",&param4,&flag4,errmsg),
+             errmsg,
+             errmsg);
+  /* --------------------------------------------------------------------
+     SBT (Spectrum-Based Template) method to induce phase-shift.
+     The parameters below determine the shape of the template applied to 
+     the unlensed and lensed CMB spectra. Users may override any of them.
+     References:
+         - Core SBT parameters: Eq. (2.6) of 2501.13788
+         - Generalization for interacting neutrinos: Eq. (5) of 2509.20363
+     -------------------------------------------------------------------- */
+
+  /* Core SBT parameters */
+  class_call(parser_read_double(pfc,"ell_infty",&param5,&flag5,errmsg),
+             errmsg, errmsg);
+  class_call(parser_read_double(pfc,"ell_star",&param6,&flag6,errmsg),
+             errmsg, errmsg);
+  class_call(parser_read_double(pfc,"xi",&param7,&flag7,errmsg),
+             errmsg, errmsg);
+  /* Interacting-neutrino generalization */
+  class_call(parser_read_double(pfc,"A_infty",&param8,&flag8,errmsg),
+             errmsg, errmsg);
+
+  /* Fiducial-undamping parameters */
+  class_call(parser_read_double(pfc,"afid",&param9,&flag9,errmsg),
+             errmsg, errmsg);
+  class_call(parser_read_double(pfc,"kfid",&param10,&flag10,errmsg),
+             errmsg, errmsg);
+  class_call(parser_read_double(pfc,"thD_fid",&param11,&flag11,errmsg),
+             errmsg, errmsg);
+  /* --------------------------------------------------------------------
+     PBT (Perturbation-Based Template) method to induce phase-shift.
+     Instead of applying a template to the final CMB spectra (as in SBT),
+     this method directly shifts the photon temperature and polarization
+     source functions as a function of wavenumber k and redshift z.
+     
+     The shift is implemented through a mode- and redshift-dependent
+     perturbation-based template defined in Eq. (2.10) of 2501.13788.
+     For further details and physical interpretation, see Sec. 2.3 of
+     that reference.
+
+     If enabled, PBT overrides all SBT settings.
+     -------------------------------------------------------------------- */
+  class_call(parser_read_string(pfc,"perturbation_based_shift",&string1,&flag12,errmsg),
+             errmsg, errmsg);
+  class_call(parser_read_string(pfc,"phase_shift_template_file",&string2,&flag13,errmsg),
+             errmsg, errmsg);
+  /* Consistency checks */
   class_test(class_at_least_two_of_three(flag1,flag2,flag3),
              errmsg,
              "You can only enter one of 'N_ur', 'Omega_ur' or 'omega_ur'.");
@@ -2456,7 +2511,10 @@ int input_read_parameters_species(struct file_content * pfc,
   if (class_none_of_three(flag1,flag2,flag3)) {
     pba->Omega0_ur = 3.044*7./8.*pow(4./11.,4./3.)*pba->Omega0_g;
   }
-  else {
+  /* --------------------------------------------------------------------------
+     Case 1: N_phase NOT specified --> set N_phase = N_ur (physically relevant)
+     ----------------------------------------------------------------------- */
+  if (flag4 == _FALSE_) {
     if (flag1 == _TRUE_) {
       pba->Omega0_ur = param1*7./8.*pow(4./11.,4./3.)*pba->Omega0_g;
     }
@@ -2467,8 +2525,60 @@ int input_read_parameters_species(struct file_content * pfc,
       pba->Omega0_ur = param3/pba->h/pba->h;
     }
   }
-  class_test(pba->Omega0_ur<0,errmsg,"You cannot set the density of ultra-relativistic relics (dark radiation/neutrinos) to negative values. You might have input a total Neff smaller than what your massive neutrinos require minimally (around 1.02 * N_ncdm * deg_ncdm).");
-
+  /* -------------------------------------------------------------------------
+     Case 2: N_phase explicitly provided by the user --> override only N_phase
+     ----------------------------------------------------------------------- */
+  if (flag4 == _TRUE_) {
+    if (flag1 == _TRUE_) {
+      pba->Omega0_ur = param1*7./8.*pow(4./11.,4./3.)*pba->Omega0_g;
+      pba->N_phase = param4;
+    }
+    if (flag2 == _TRUE_) {
+      pba->Omega0_ur = param2;
+      pba-> N_phase = param4;
+    }
+    if (flag3 == _TRUE_) {
+      pba->Omega0_ur = param3/pba->h/pba->h;
+      pba->N_phase = param4;
+    }
+  }
+  class_test(pba->Omega0_ur<0,errmsg,"You cannot set the density of ultra-relativistic relics (dark radiation/neutrinos) to negative values.");
+  class_test(pba->N_phase<0,errmsg,"You cannot set 'N_phase' to negative values.");
+  if (flag12 == _TRUE_) {
+    if (string_begins_with(string1,'y') || string_begins_with(string1,'Y')) {
+      ppt->perturbation_based_shift = _TRUE_;
+    }
+    else {
+      ppt->perturbation_based_shift = _FALSE_;
+    }
+  }
+  if (flag13 == _TRUE_) {
+    strcpy(ppt->phase_shift_template_file, string2);
+  }    
+  /* -----------------------------------------------------------------------
+     Apply overrides to SBT parameters if user supplied them
+     -------------------------------------------------------------------- */
+  if (flag5 == _TRUE_) {
+    pba->ell_infty = param5;
+  }
+  if (flag6 == _TRUE_) {
+    pba->ell_star = param6;
+  }
+  if (flag7 == _TRUE_) {
+    pba->xi = param7;
+  }
+  if (flag8 == _TRUE_) {
+    pba->A_infty = param8;
+  }
+  if (flag9 == _TRUE_) {
+    pba->afid = param9;
+  }
+  if (flag10 == _TRUE_) {
+    pba->kfid = param10;
+  }
+  if (flag11 == _TRUE_) {
+    pba->thD_fid = param11;
+  }
   /** 3.a) Case of non-standard properties */
   /* Read */
   class_call(parser_read_double(pfc,"ceff2_ur",&param1,&flag1,errmsg),
@@ -5799,7 +5909,7 @@ int input_default_params(struct background *pba,
   pth->reio_inter_xe = NULL;
 
   /** 9) Damping scale */
-  pth->compute_damping_scale = _FALSE_;
+  pth->compute_damping_scale = _TRUE_;
 
   /** 10) Varying fundamental constants */
   pba->varconst_dep = varconst_none;
@@ -5829,6 +5939,26 @@ int input_default_params(struct background *pba,
   ppt->three_ceff2_ur=1.;
   ppt->three_cvis2_ur=1.;
 
+  /** 3.b) Direct phase shift parameters */
+  /* As a default N_phase= N_eff, unless otherwise specified since N_eff
+     represents free-streaming (phase-shifting) relativistic species */ 
+  pba->N_phase = 3.044;
+
+  /** 3.b.1) Spectrum Based Template (SBT) Method */
+  /* SBT parameters (Eq. 2.6 in 2501.13788) */
+  pba->ell_infty = 10.99;
+  pba->ell_star = 483.27;
+  pba->xi = -1.69;
+  /*SBT Generalization for testing neutrino interacting scenarios (Eq. 5 in 2509.20363 )*/
+  pba->A_infty = 1;
+  /* Parameters relevant for undamping the produced lensed power spectra (Eq. 2.3 in 2501.13788)*/
+  pba->afid = 0.6721047;
+  pba->kfid = 1.3;
+  pba->thD_fid = 0.0016144385060630974;
+  /** 3.b. 2) Perturbation Based Template (PBT) Method */
+  ppt->perturbation_based_shift=_FALSE_;
+  sprintf(ppt->phase_shift_template_file, "%s/external/phase_shift_files/PBT_default.dat", __CLASSDIR__);
+  
   /** 4) CDM density */
   pba->Omega0_cdm = 0.1201075/pow(pba->h,2);
 

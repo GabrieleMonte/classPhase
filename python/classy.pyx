@@ -194,6 +194,41 @@ cdef class Class:
       self.compute(["background"])
       return CallableFloat(self.ba.Neff)
     @property
+    def Nphase(self):
+      """Return the effective neutrino number N_eff (dimensionless) which parametrizes the density of radiation in the early universe, before non-cold dark matter particles become non-relativistic. Should be 3.044 in the standard model."""
+      self.compute(["background"])
+      return CallableFloat(self.ba.N_phase)
+
+    def Phase_shift_Template_vars(self):
+        """
+        Return a dictionary containing all Spectrum-Based Template (SBT)
+        parameters relevant for the analytic phase-shift method.
+
+        The output groups:
+          * template_vars  – parameters controlling the \ell-dependent phase shift  
+          * undamping_vars – parameters used to undamp C_\ell before interpolation  
+        """
+
+        phase_shift_vars = {}
+
+        # SBT template-shape parameters (\ell_infty, \ell_\star, \xi, \mathcal{A}_\infty)
+        phase_shift_vars['template_vars'] = {
+            'ell_infty' : self.ba.ell_infty,
+            'ell_star'  : self.ba.ell_star,
+            'xi'        : self.ba.xi,
+            'A_infty'   : self.ba.A_infty
+        }
+
+        # Undamping parameters used in building \mathcal{K}_\ell (Eq. 2.3 of 2501.13788)
+        phase_shift_vars['undamping_vars'] = {
+            'a_fid'     : self.ba.afid,
+            'k_fid'     : self.ba.kfid,
+            'thetaD_fid': self.ba.thD_fid
+        }
+
+        return phase_shift_vars
+    
+    @property
     def T_cmb(self):
       """Return the photon temperature T_cmb (units of K) evaluated at z=0"""
       return CallableFloat(self.ba.T_cmb)
@@ -744,7 +779,141 @@ cdef class Class:
         else:
           raise CosmoSevereError("Unrecognized baseline case '{}'".format(baseline_name))
 
-    def raw_cl(self, lmax=-1, nofail=False):
+    def diffusion_damping_scale_cmb(self):
+        """
+        Compute the photon diffusion damping angular scale \theta_D at recombination.
+        This function:
+            1. Extracts r_d(z) — the comoving diffusion (Silk) damping scale — from
+            the thermodynamics module.
+            2. Converts it to the physical diffusion scale r_d,phys = a * r_d.
+            3. Interpolates r_d(z) around z \approx z_rec.
+            4. Converts r_d(z_rec) to the corresponding angular scale: \theta_D = r_d(z_rec) / [2 * D_A(z_rec)]
+            where D_A is the angular diameter distance.
+        Note: The factor of 2 (rather than 2\pi) is consistent with the convention used in 1810.02800.
+        """
+        zrec = self.th.z_rec
+        th_vals = self.get_thermodynamics()
+        # Comoving diffusion scale r_d(z)
+        r_dc = np.array(th_vals['r_d'])
+        # Convert to physical diffusion scale r_d,phys(z) = a(z) * r_d(z)
+        a = np.array(th_vals['scale factor a'])
+        r_d = a * r_dc
+        # Build spline r_d(z)
+        z = np.array(th_vals['z'])
+        rd_spline = CubicSpline(z, r_d)
+        # Angular diameter distance at recombination
+        DArec = self.angular_distance(zrec)
+        # Diffusion damping scale at z_rec
+        rd_rec = rd_spline(zrec)
+        # Angular diffusion scale \theta_D
+        thetad_rec = rd_rec / (2.0 * DArec)
+        del zrec, th_vals, r_dc, a, r_d, z, rd_spline, DArec, rd_rec
+        return thetad_rec
+
+    def shifted_cl(self, cls, lmax, lensed_cl=True):
+        """
+        Apply the Spectrum-Based Template (SBT) phase shift to TT, EE, and TE spectra.
+        This method implements the analytical phase-shift template described in
+        Montefalcone, Wallisch & Freese (2501.13788) and its generalization to interacting
+        neutrino scenarios in Montefalcone et al. (2509.20363).  The same routine
+        handles both the Standard-Model phase shift and modifications due to
+        non-free-streaming neutrino sectors through the asymptotic amplitude ratio \mathcal{A}_\infty.
+        Steps:
+            (1) Compute the photon diffusion damping scale \theta_D for the model.
+            (2) Recompute the ISW contribution using the same cosmological parameters
+            but with phase-shift disabled, so that ISW terms can be cleanly removed.
+            (3) Convert the spectra from C_ell to the undamped spectra K_ell used by the SBT method:
+            K_ell = ell*(ell+1)/(2\pi) * C_ell * \exp[ a (ell* theta_D)^k]
+            (4) Build the \ell-dependent phase shift:
+            ell --> ell + \Delta ell(ell) = ell + A* ell_infty / [1 + (ell/ell_*)^xi]* \mathcal{A}_infty
+            where A depends on (N_eff, N_phase) through epsilon(N) = N/(N + a_nu) and \mathcal{A}_infty is the asymptotic amplitude ratio
+            which allows to capture both free-streaming and interacting-neutrino scenarios.
+            (5) Interpolate the K_ell spectra onto the shifted ell-grid.
+            (6) Undo the exponential damping and convert back to C_ell.
+            (7) Add back the ISW contribution.
+        This produces the phase-shifted spectra TT, EE, TE up to \ell_max.
+        """
+        # --- 0) Constants for the ε(N) map controlling the phase-shift amplitude ---
+        cdef double a_nu = 8.0/7.0 * (11.0/4.0)**(4.0/3.0)
+        cdef double eps1  = 1.0 / (1.0 + a_nu)          # \epsilon(N=1)
+        cdef double eps_fid = 3.044 / (3.044 + a_nu)     # \epsilon(N=3.044)
+        
+        # Extract cosmological parameters from the current CLASS instance
+        cosmo_pars = self._pars
+        Neff_value   = self.ba.Neff
+        N_phase_value = self.ba.N_phase
+        
+        # SBT template parameters from background
+        ell_infty_value        = self.ba.ell_infty
+        ell_star_value         = self.ba.ell_star
+        xi_value               = self.ba.xi
+        afid_value             = self.ba.afid
+        kfid_value             = self.ba.kfid
+        thD_fid_value          = self.ba.thD_fid
+        A_infty_value  		   = self.ba.A_infty
+        
+        # --- 1) Compute \theta_D for this cosmology ---
+        thD_cosmo = self.diffusion_damping_scale_cmb()
+        
+        # --- 2) Compute ISW-only Cl’s to subtract them consistently ---
+        new_self = Class()
+        new_self.set(cosmo_pars)
+        new_self.set({'temperature contributions': 'eisw,lisw'})
+        new_self.compute()
+        if lensed_cl:
+            cls_isw = new_self.lensed_cl(lmax, allow_shift=False)
+        else:
+            cls_isw = new_self.raw_cl(lmax, allow_shift=False)
+        new_self.struct_cleanup()
+        new_self.empty()
+        
+        # --- 3) Extract spectra and remove ISW contributions (only for TT, TE) ---
+        ll = np.array(cls['ell'][2:])
+        cTT_noisw = np.array(cls['tt'][2:] - cls_isw['tt'][2:])
+        cEE       = np.array(cls['ee'][2:])
+        cTE_noisw = np.array(cls['te'][2:] - cls_isw['te'][2:])
+        
+        # --- 4) Convert C_\ell to the \mathcal{K}_\ell representation used for undamping ---
+        kTT_noisw = ll*(ll+1.)/(2.*np.pi) * cTT_noisw * np.exp(afid_value*(ll*thD_cosmo)**kfid_value)
+        kEE       = ll*(ll+1.)/(2.*np.pi) * cEE       * np.exp(afid_value*(ll*thD_cosmo)**kfid_value)
+        kTE_noisw = ll*(ll+1.)/(2.*np.pi) * cTE_noisw * np.exp(afid_value*(ll*thD_cosmo)**kfid_value)
+        
+        # --- 5) Build the \ell-dependent phase-shift template ---
+        
+        # \epsilon(N) = N / (N + a_\nu)
+        eps_Nphase = N_phase_value / (N_phase_value + a_nu)
+        eps_Nnu  = Neff_value   / (Neff_value   + a_nu)
+        
+        # Amplitude A scaling the phase shift
+        Amp = (eps_Nphase*A_infty_value - eps_Nnu) / (eps1 - eps_fid)
+        
+        # Shifted multipoles \ell --> \ell + \Delta\ell
+        ll1 = Amp * ell_infty_value / (1.0 + (ll/ell_star_value)**xi_value) + ll
+        
+        # --- 6) Interpolate \mathcal{K}_\ell spectra onto shifted \ells, undo undamping, and convert back ---	
+        
+        # TT
+        kTT_noisw_func = CubicSpline(ll1, kTT_noisw)
+        shifted_cTT_noisw = (kTT_noisw_func(ll)* np.exp(-afid_value*(ll*thD_cosmo)**kfid_value)* 2*np.pi / (ll*(ll+1)))
+        cls['tt'] = np.concatenate([cls['tt'][:2], shifted_cTT_noisw + cls_isw['tt'][2:]])
+        
+        # EE
+        kEE_func = CubicSpline(ll1, kEE)
+        shifted_cEE = (kEE_func(ll)* np.exp(-afid_value*(ll*thD_cosmo)**kfid_value)* 2*np.pi / (ll*(ll+1)))
+        cls['ee'] = np.concatenate([cls['ee'][:2], shifted_cEE])
+        
+        # TE
+        kTE_noisw_func = CubicSpline(ll1, kTE_noisw)
+        shifted_cTE_noisw = (kTE_noisw_func(ll)* np.exp(-afid_value*(ll*thD_cosmo)**kfid_value)* 2*np.pi / (ll*(ll+1)))
+        cls['te'] = np.concatenate([cls['te'][:2], shifted_cTE_noisw + cls_isw['te'][2:]])
+        
+        # Clean up and return
+        del (Neff_value, N_phase_value, thD_cosmo, ll, cTT_noisw, kTT_noisw, shifted_cTT_noisw, ll1, eps_Nphase, eps_Nnu, Amp,
+            cEE, kEE, shifted_cEE, kEE_func, cTE_noisw, kTE_noisw, shifted_cTE_noisw, kTE_noisw_func, new_self, cosmo_pars, cls_isw)
+        return cls
+
+
+    def raw_cl(self, lmax=-1, nofail=False, allow_shift=True):
         """
         Unlensed CMB spectra
 
@@ -776,7 +945,6 @@ cdef class Class:
         """
         self.compute(["harmonic"])
         cdef int lmaxR
-
         # Define a list of integers, refering to the flags and indices of each
         # possible output Cl. It allows for a clear and concise way of looping
         # over them, checking if they are defined or not.
@@ -849,10 +1017,19 @@ cdef class Class:
         # This has to be delayed until AFTER freeing the memory
         if not success:
           raise CosmoSevereError(self.hr.error_message)
+        # If SBT shifting is enabled, and the cosmology requires a non-standard
+        # phase shift (i.e. N_eff != N_phase or \mathcal{A}_\infty != 1), and the PBT
+        # method is NOT active, then apply the SBT-shifted spectra.
+        cdef double Neff_val    = self.ba.Neff
+        cdef double Nphase_val  = self.ba.N_phase
+        cdef double A_infty_val = self.ba.A_infty
+        if ((allow_shift == True) and ((np.around(Neff_val,4) != np.around(Nphase_val,4)) or (A_infty_val != 1)) and (self.pt.perturbation_based_shift == False)):
+            return self.shifted_cl(cl, lmax, lensed_cl=False)
+        # Otherwise return the unshifted primordial C_ell
+        else:
+            return cl
 
-        return cl
-
-    def lensed_cl(self, lmax=-1,nofail=False):
+    def lensed_cl(self, lmax=-1,nofail=False, allow_shift=True):
         """
         Lensed CMB spectra
 
@@ -938,8 +1115,18 @@ cdef class Class:
         # This has to be delayed until AFTER freeing the memory
         if not success:
           raise CosmoSevereError(self.le.error_message)
-
-        return cl
+        # If SBT shifting is enabled, and the cosmology requires a non-standard
+        # phase shift (i.e. N_eff != N_phase or \mathcal{A}_\infty != 1), and the PBT
+        # method is NOT active, then apply the SBT-shifted spectra.
+        cdef double Neff_val    = self.ba.Neff
+        cdef double Nphase_val  = self.ba.N_phase
+        cdef double A_infty_val = self.ba.A_infty
+        # --- Debug prints (Cython-safe; prints Python-side) ---
+        if ((allow_shift == True) and ((np.around(Neff_val,4) != np.around(Nphase_val,4)) or (A_infty_val != 1)) and (self.pt.perturbation_based_shift == False)):
+            return self.shifted_cl(cl, lmax, lensed_cl=True)
+        # Otherwise return the unshifted primordial C_ell
+        else:
+            return cl
 
     def density_cl(self, lmax=-1, nofail=False):
         """
