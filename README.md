@@ -26,7 +26,7 @@ These features allow precision modeling and parameter estimation targeting the p
 
 ## Example Notebook
 
-A step-by-step usage example is provided in [`notebooks/phase_shift_in_CMB_spectra.ipynb`].
+A step-by-step usage example is provided in `notebooks/phase_shift_in_CMB_spectra.ipynb`.
 
 
 ## Installation
