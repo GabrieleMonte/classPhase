@@ -44,8 +44,8 @@ See https://github.com/lesgourg/class_public for additional installation instruc
 
 This code is based on the theoretical framework developed in the following papers:
 
-- G. Montefalcone, B. Wallisch, K. Freese, *CMB Detection of Neutrino Phase Shift*, [arXiv:2501.13788](https://arxiv.org/abs/2501.13788)
-- G. Montefalcone, S. Ghosh, K. K. Boddy , D. Wei Ren Ho, Y. Tsai, *Neutrino Interactions from the Phase Shift*, [arXiv:2509.20363](https://arxiv.org/abs/2509.20363)
+- G. Montefalcone, B. Wallisch, K. Freese, *Free-Streaming Neutrinos and Their Phase Shift in Current and Future CMB Power Spectra*, [arXiv:2501.13788](https://arxiv.org/abs/2501.13788)
+- G. Montefalcone, S. Ghosh, K. K. Boddy , D. Wei Ren Ho, Y. Tsai, *Directly Probing Neutrino Interactions through CMB Phase Shift Measurements*, [arXiv:2509.20363](https://arxiv.org/abs/2509.20363)
 
 Please cite these works if you use **classPhase** in your research.
 
