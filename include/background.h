@@ -168,7 +168,7 @@ struct background
 
   double ell_infty;      /**< Asymptotic multipole shift \ell_\infty */
   double ell_star;       /**< Characteristic transition scale \ell_\star */
-  double xi;             /**< Power-law slope parameter \xi */
+  double xi_phase;             /**< Power-law slope parameter \xi */
   double A_infty;        /**< High-\ell normalization A_\infty for SBT with interacting neutrinos*/
 
   /* ------------------------------------------------------------

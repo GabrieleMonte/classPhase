@@ -2471,7 +2471,7 @@ int input_read_parameters_species(struct file_content * pfc,
              errmsg, errmsg);
   class_call(parser_read_double(pfc,"ell_star",&param6,&flag6,errmsg),
              errmsg, errmsg);
-  class_call(parser_read_double(pfc,"xi",&param7,&flag7,errmsg),
+  class_call(parser_read_double(pfc,"xi_phase",&param7,&flag7,errmsg),
              errmsg, errmsg);
   /* Interacting-neutrino generalization */
   class_call(parser_read_double(pfc,"A_infty",&param8,&flag8,errmsg),
@@ -2565,7 +2565,7 @@ int input_read_parameters_species(struct file_content * pfc,
     pba->ell_star = param6;
   }
   if (flag7 == _TRUE_) {
-    pba->xi = param7;
+    pba->xi_phase = param7;
   }
   if (flag8 == _TRUE_) {
     pba->A_infty = param8;
@@ -5948,7 +5948,7 @@ int input_default_params(struct background *pba,
   /* SBT parameters (Eq. 2.6 in 2501.13788) */
   pba->ell_infty = 10.99;
   pba->ell_star = 483.27;
-  pba->xi = -1.69;
+  pba->xi_phase = -1.69;
   /*SBT Generalization for testing neutrino interacting scenarios (Eq. 5 in 2509.20363 )*/
   pba->A_infty = 1;
   /* Parameters relevant for undamping the produced lensed power spectra (Eq. 2.3 in 2501.13788)*/

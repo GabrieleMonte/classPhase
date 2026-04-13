@@ -110,7 +110,7 @@ cdef extern from "class.h":
         double tau_eq
         #phase-shift relevant quantities
         double N_phase
-        double xi
+        double xi_phase
         double ell_infty
         double A_infty
         double ell_star

@@ -215,7 +215,7 @@ cdef class Class:
         phase_shift_vars['template_vars'] = {
             'ell_infty' : self.ba.ell_infty,
             'ell_star'  : self.ba.ell_star,
-            'xi'        : self.ba.xi,
+            'xi'        : self.ba.xi_phase,
             'A_infty'   : self.ba.A_infty
         }
 
@@ -846,7 +846,7 @@ cdef class Class:
         # SBT template parameters from background
         ell_infty_value        = self.ba.ell_infty
         ell_star_value         = self.ba.ell_star
-        xi_value               = self.ba.xi
+        xi_value               = self.ba.xi_phase
         afid_value             = self.ba.afid
         kfid_value             = self.ba.kfid
         thD_fid_value          = self.ba.thD_fid
