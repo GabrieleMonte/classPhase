@@ -1948,15 +1948,25 @@ cdef class Class:
 
             # Check highest value of z in the requested output.
             z_max_requested = z[0]
-
-            # The first z must be larger or equal to the second one, that is,
-            # the first index must be smaller or equal to the second one.
-            # If not, raise and error.
+            # If the requested z_max exceeds what HMcode could compute, either
+            # raise (if the failure is inside the physically-relevant nonlinear
+            # regime) or silently fall back to linear P(k) for the affected
+            # redshifts (if we're safely in the matter-dominated regime where
+            # nonlinear corrections are negligible).
             if (z_max_requested > z_max_nonlinear and self.fo.index_tau_min_nl>0):
-                raise CosmoSevereError("get_pk_and_k_and_z() is trying to return P(k,z) up to z_max=%e (the redshift range of computed pk); but the input parameters sent to CLASS (in particular ppr->nonlinear_min_k_max=%e) were such that the non-linear P(k,z) could only be consistently computed up to z=%e; increase the precision parameter 'nonlinear_min_k_max', or only obtain the linear pk"%(z_max_requested,self.pr.nonlinear_min_k_max,z_max_nonlinear))
-
-        # get list of k
-
+                if (z_max_nonlinear < self.pr.z_MAX_NL):
+                    raise CosmoSevereError(
+                    "get_pk_and_k_and_z() requested nonlinear P(k,z) up to "
+                    "z_max=%e, but CLASS could only compute nonlinear P(k,z) "
+                    "up to z=%e (limited by ppr->nonlinear_min_k_max=%e). "
+                    "This is below the safety threshold z_MAX_NL=%e, meaning "
+                    "nonlinear corrections would be missing at redshifts "
+                    "where they are physically significant. Either increase "
+                    "nonlinear_min_k_max, or (if you are sure the missing "
+                    "range is harmless) lower z_MAX_NL."
+                    % (z_max_requested, z_max_nonlinear,
+                    self.pr.nonlinear_min_k_max, self.pr.z_MAX_NL))
+                # else: silently fall back to linear P(k), see the fill loop below
         if h_units:
             units=1./self.ba.h
         else:
@@ -1966,15 +1976,18 @@ cdef class Class:
             k[index_k] = self.fo.k[index_k]*units
 
         # get P(k,z) array
-
+        # Threshold in ln_tau index space: indices >= idx_thr have valid nonlinear P(k); 
+        # indices < idx_thr correspond to z > z_max_nonlinear and must read from the linear grid instead.
+        cdef int idx_thr = self.fo.ln_tau_size - self.fo.ln_tau_size_nl
         for index_tau in range(self.fo.ln_tau_size):
+            use_nl = nonlinear and (index_tau >= idx_thr)
             for index_k in range(self.fo.k_size_pk):
-                if nonlinear == True:
+                if use_nl:
                     pk[index_k, index_tau] = np.exp(self.fo.ln_pk_nl[index_pk][index_tau * self.fo.k_size + index_k])
                 else:
                     pk[index_k, index_tau] = np.exp(self.fo.ln_pk_l[index_pk][index_tau * self.fo.k_size + index_k])
-
         return pk, k, z
+
 
     def get_transfer_and_k_and_z(self, output_format='class', h_units=False):
         """

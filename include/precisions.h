@@ -521,6 +521,18 @@ class_precision_parameter(nonlinear_min_k_max,double,5.0) /**< when
                                is still controlled by P_k_max_1/Mpc or
                                P_k_max_h/Mpc even if they are
                                smaller */
+                               
+class_precision_parameter(z_MAX_NL,double,5.0) /**< safety threshold for the
+                                    automatic linear-P(k) fallback when HMcode
+                                    cannot compute nonlinear corrections up to
+                                    the requested z_max. If the actual
+                                    z_max_nonlinear is below z_MAX_NL, an error
+                                    is raised (HMcode failed below a regime
+                                    where nonlinear corrections still matter).
+                                    Above z_MAX_NL, linear P(k) is returned in
+                                    place of nonlinear P(k) (physically
+                                    equivalent at those redshifts in standard
+                                    cosmologies). */
 
 class_precision_parameter(k_max_for_pk_sigma8_min,double,10.) /**< minimal k_max for computation of sigma8 */
 class_precision_parameter(k_max_for_pk_sigma8_max,double,100.) /**< maximal k_max for computation of sigma8 */
