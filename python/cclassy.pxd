@@ -52,6 +52,7 @@ cdef extern from "class.h":
 
     cdef struct precision:
         double nonlinear_min_k_max
+        double z_MAX_NL
         char base_path[1000]
         ErrorMsg error_message
 
@@ -428,6 +429,7 @@ cdef extern from "class.h":
         int k_size
         int k_size_pk
         int ln_tau_size
+        int ln_tau_size_nl
         int index_ln_tau_pk
         int tau_size
         int index_tau_min_nl
